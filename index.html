@@ -7,7 +7,6 @@
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
     <script src="https://cdn.jsdelivr.net/npm/pyodide@0.25.0/pyodide.js"></script>
     <style>
-        /* Custom tooltip hover behavior */
         .tooltip:hover .tooltip-text { opacity: 1; visibility: visible; }
     </style>
 </head>
@@ -28,9 +27,9 @@
             <div class="bg-gray-750 p-4 rounded-lg border border-gray-700 font-mono text-sm space-y-1 relative">
                 <button onclick="copyVolsToClipboard()" class="absolute top-3 right-3 bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs px-2 py-1 rounded transition">Copy Text</button>
                 <div id="copyableVolsBlock">
-<div>Historical Vol (30d): <span id="histVolText" class="text-white font-bold">--%</span></div>
-<div>GARCH / EWMA Forecast: <span id="garchVolText" class="text-white font-bold">--%</span></div>
-<div>Implied volatility (<span id="ivExpiryText">IV exp date</span>): <span id="impliedVolText" class="text-white font-bold">--%</span></div>
+                    <div>Historical Vol (30d): <span id="histVolText" class="text-white font-bold">--%</span></div>
+                    <div>GARCH / EWMA Forecast: <span id="garchVolText" class="text-white font-bold">--%</span></div>
+                    <div>Implied volatility (<span id="ivExpiryText">IV exp date</span>): <span id="impliedVolText" class="text-white font-bold">--%</span></div>
                 </div>
             </div>
 
@@ -44,7 +43,7 @@
                     <span id="toggleArrow" class="transform transition-transform duration-200">▲</span>
                 </button>
                 
-                <div id="expectedMoveContent" class="p-4 bg-gray-850 space-y-4">
+                <div id="expectedMoveContent" class="p-4 bg-gray-850 space-y-4 hidden">
                     
                     <div class="flex justify-between items-center border-b border-gray-700 pb-2 relative">
                         <span class="text-gray-400 tooltip cursor-help border-b border-dotted border-gray-500">
@@ -104,7 +103,7 @@
             const statusEl = document.getElementById('status');
             const dashboard = document.getElementById('outputDashboard');
             
-            statusEl.innerText = `Fetching financial data for ${ticker}...`;
+            statusEl.innerText = `Fetching data for ${ticker}...`;
             statusEl.classList.remove('hidden');
             dashboard.classList.add('hidden');
 
@@ -113,38 +112,39 @@
             try {
                 const pyodide = await initPyodide();
 
-                // 1. Fetch historical stock bars from Polygon.io
+                // 1. Fetch historical data
                 const today = new Date().toISOString().split('T')[0];
                 const physicalPast = new Date();
                 physicalPast.setFullYear(physicalPast.getFullYear() - 1);
                 const aYearAgo = physicalPast.toISOString().split('T')[0];
 
                 const histRes = await fetch(`https://api.polygon.io/v2/aggs/ticker/${ticker}/range/1/day/${aYearAgo}/${today}?adjusted=true&sort=asc&apiKey=${apiKey}`);
+                if (!histRes.ok) throw new Error(`History API failed: ${histRes.status}`);
                 const histData = await histRes.json();
                 
                 if (!histData.results || histData.results.length === 0) {
-                    throw new Error("No tracking historical entries discovered.");
+                    throw new Error("No historical data returned for ticker.");
                 }
 
                 const closes = histData.results.map(bar => bar.c);
                 const spot = closes[closes.length - 1];
 
-                // 2. Fetch Option Chain via Polygon to derive front-month ATM Implied Volatility
-                const optionsRes = await fetch(`https://api.polygon.io/v3/snapshot/options/${ticker}?limit=5&apiKey=${apiKey}`);
-                const optionsData = await optionsRes.json();
-                
-                let impliedVol = 0.2450; // Mathematical default baseline fallback if chain empty
+                // 2. Safe Options chain fetch with graceful fallback
+                let impliedVol = 0.25; 
                 let expiryLabel = "Front Expiry";
 
-                if (optionsData.results && optionsData.results.length > 0) {
-                    // Pull details safely from the first available ATM contract mapping
-                    const contract = optionsData.results[0];
-                    if (contract.implied_volatility) {
-                        impliedVol = contract.implied_volatility;
+                try {
+                    const optionsRes = await fetch(`https://api.polygon.io/v3/snapshot/options/${ticker}?limit=5&apiKey=${apiKey}`);
+                    if (optionsRes.ok) {
+                        const optionsData = await optionsRes.json();
+                        if (optionsData.results && optionsData.results.length > 0) {
+                            const contract = optionsData.results[0];
+                            if (contract.implied_volatility) impliedVol = contract.implied_volatility;
+                            if (contract.details && contract.details.expiration_date) expiryLabel = contract.details.expiration_date;
+                        }
                     }
-                    if (contract.details && contract.details.expiration_date) {
-                        expiryLabel = contract.details.expiration_date;
-                    }
+                } catch (optErr) {
+                    console.warn("Options IV lookup failed, falling back to historical engine defaults:", optErr);
                 }
 
                 pyodide.globals.set("closes_js", closes);
@@ -167,7 +167,6 @@ for i in range(1, len(returns)):
     vols[i] = lambda_val * vols[i-1] + (1 - lambda_val) * (returns[i-1]**2)
 garch_proxy = np.sqrt(vols[-1]) * np.sqrt(252)
 
-# Calculation shifts handling explicit metrics configurations
 one_day_move_dlr = spot * (iv_val / np.sqrt(252))
 one_day_move_pct = (iv_val / np.sqrt(252)) * 100
 down_move_target = spot - one_day_move_dlr
@@ -184,13 +183,12 @@ json.dumps(results)
 `;
                 const pyOutputs = JSON.parse(await pyodide.runPythonAsync(pythonCode));
 
-                // Populate Inline Metrics Display Layout
+                // Populate fields
                 document.getElementById('histVolText').innerText = `${(pyOutputs.hist_vol * 100).toFixed(2)}%`;
                 document.getElementById('garchVolText').innerText = `${(pyOutputs.garch_vol * 100).toFixed(2)}%`;
                 document.getElementById('ivExpiryText').innerText = expiryLabel;
                 document.getElementById('impliedVolText').innerText = `${(impliedVol * 100).toFixed(2)}%`;
                 
-                // Populate Secondary Calculations Elements
                 document.getElementById('spotPrice').innerText = `$${spot.toFixed(2)}`;
                 document.getElementById('oneDayMove').innerText = `$${pyOutputs.one_day_dlr.toFixed(2)}`;
                 document.getElementById('oneDayMovePct').innerText = `${pyOutputs.one_day_pct.toFixed(2)}%`;
@@ -201,7 +199,7 @@ json.dumps(results)
 
             } catch (err) {
                 console.error(err);
-                statusEl.innerText = "Error analyzing ticker framework. Verify key parameters or limits.";
+                statusEl.innerText = `Error: ${err.message}. Check your API Key setup.`;
             }
         }
 
@@ -214,9 +212,9 @@ json.dumps(results)
             const textToCopy = `Historical Vol (30d): ${hist}\nGARCH / EWMA Forecast: ${garch}\nImplied volatility (${expDate}): ${iv}`;
             
             navigator.clipboard.writeText(textToCopy).then(() => {
-                alert("Text successfully copied to clipboard!");
+                alert("Text copied!");
             }).catch(err => {
-                console.error("Clipboard copy failed: ", err);
+                console.error("Copy failed", err);
             });
         }
 
@@ -231,11 +229,6 @@ json.dumps(results)
                 arrow.style.transform = 'rotate(180deg)';
             }
         }
-
-        document.addEventListener("DOMContentLoaded", () => {
-            document.getElementById('expectedMoveContent').classList.add('hidden');
-            document.getElementById('toggleArrow').style.transform = 'rotate(180deg)';
-        });
     </script>
 </body>
 </html>
