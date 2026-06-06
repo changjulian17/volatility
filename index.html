@@ -63,7 +63,7 @@
                         <span class="text-gray-400 tooltip cursor-help border-b border-dotted border-gray-500">
                             Expected One-Day Move ($):
                             <span class="tooltip-text absolute bg-black text-xs text-gray-200 rounded p-2 max-w-xs -top-12 left-0 opacity-0 invisible transition-opacity duration-200 z-10 shadow-lg border border-gray-700">
-                                Formula: Spot Price × (Implied Volatility / √252)
+                                Formula: Spot Price × (Implied Volatility / √252) × 0.8 (median move)
                             </span>
                         </span>
                         <span id="oneDayMove" class="text-lg font-mono text-white font-semibold">--</span>
@@ -73,7 +73,7 @@
                         <span class="text-gray-400 tooltip cursor-help border-b border-dotted border-gray-500">
                             Expected One-Day Move (%):
                             <span class="tooltip-text absolute bg-black text-xs text-gray-200 rounded p-2 max-w-xs -top-12 left-0 opacity-0 invisible transition-opacity duration-200 z-10 shadow-lg border border-gray-700">
-                                Formula: Implied Volatility / √252
+                                Formula: (Implied Volatility / √252) × 0.8 (median move)
                             </span>
                         </span>
                         <span id="oneDayMovePct" class="text-lg font-mono text-yellow-400 font-bold">--</span>
