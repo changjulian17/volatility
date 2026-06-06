@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -5,7 +6,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Volatility & Expected Move Analyzer</title>
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
-    <script src="https://cdn.jsdelivr.net/npm/pyodide@0.25.0/pyodide.js"></script>
     <style>
         .tooltip:hover .tooltip-text { opacity: 1; visibility: visible; }
     </style>
@@ -20,10 +20,9 @@
             <button id="fetchBtn" onclick="runAnalysis()" class="px-6 py-3 bg-yellow-500 hover:bg-yellow-600 text-gray-900 font-bold rounded-lg transition duration-200">GET VOLS</button>
         </div>
 
-        <div id="statusContainer" class="hidden bg-gray-850 p-4 rounded-lg border border-gray-700 mb-6 space-y-2 text-sm text-gray-300">
-            <div id="step-wasm" class="flex items-center gap-2 text-gray-500">⚪ Booting WebAssembly Python Engine...</div>
+        <div id="statusContainer" class="hidden bg-gray-850 p-4 rounded-lg border border-gray-700 mb-6 space-y-2 text-sm text-gray-300 font-mono">
             <div id="step-hist" class="flex items-center gap-2 text-gray-500">⚪ Pulling Historical Stock Data...</div>
-            <div id="step-calc" class="flex items-center gap-2 text-gray-500">⚪ Calculating Math Engine Models...</div>
+            <div id="step-calc" class="flex items-center gap-2 text-gray-500">⚪ Running Volatility Math Models...</div>
             <div id="step-options" class="flex items-center gap-2 text-gray-500">⚪ Sourcing Implied Volatility (IV)...</div>
         </div>
 
@@ -86,8 +85,6 @@
     </div>
 
     <script>
-        let pyodideInstance = null;
-
         function updateStep(id, status, text) {
             const el = document.getElementById(id);
             if (!el) return;
@@ -103,18 +100,6 @@
             }
         }
 
-        async function initPyodide() {
-            if (pyodideInstance) return pyodideInstance;
-            updateStep('step-wasm', 'running', 'Booting WebAssembly Python Engine...');
-            
-            // Explicitly await the library initialization and loading sequence
-            pyodideInstance = await loadPyodide();
-            await pyodideInstance.loadPackage(['numpy', 'pandas']);
-            
-            updateStep('step-wasm', 'done', 'WebAssembly Python Engine Ready.');
-            return pyodideInstance;
-        }
-
         async function runAnalysis() {
             const ticker = document.getElementById('tickerInput').value.trim().toUpperCase();
             if (!ticker) return;
@@ -125,19 +110,16 @@
             statusContainer.classList.remove('hidden');
             dashboard.classList.add('hidden');
             
-            updateStep('step-wasm', pyodideInstance ? 'done' : 'running', pyodideInstance ? 'WebAssembly Python Engine Ready.' : 'Booting WebAssembly Python Engine...');
             updateStep('step-hist', 'running', 'Pulling Historical Stock Data...');
             document.getElementById('step-calc').className = "flex items-center gap-2 text-gray-500";
-            document.getElementById('step-calc').innerText = "⚪ Calculating Math Engine Models...";
+            document.getElementById('step-calc').innerText = "⚪ Running Volatility Math Models...";
             document.getElementById('step-options').className = "flex items-center gap-2 text-gray-500";
             document.getElementById('step-options').innerText = "⚪ Sourcing Implied Volatility (IV)...";
 
             const apiKey = "__API_KEY_PLACEHOLDER__"; 
 
             try {
-                const pyodide = await initPyodide();
-
-                // 1. Sourcing Aggregates
+                // 1. Fetch historical metrics
                 const today = new Date().toISOString().split('T')[0];
                 const physicalPast = new Date();
                 physicalPast.setFullYear(physicalPast.getFullYear() - 1);
@@ -148,46 +130,45 @@
                 const histData = await histRes.json();
                 
                 if (!histData.results || histData.results.length === 0) {
-                    throw new Error("No historical parameters tracked for ticker.");
+                    throw new Error("No historical data returned for ticker.");
                 }
 
                 updateStep('step-hist', 'done', 'Historical Stock Data Loaded.');
-                updateStep('step-calc', 'running', 'Calculating Math Engine Models...');
+                updateStep('step-calc', 'running', 'Running Volatility Math Models...');
 
                 const closes = histData.results.map(bar => bar.c);
                 const spot = closes[closes.length - 1];
 
-                pyodide.globals.set("closes_js", closes);
-                
-                // Explicit processing sequence
-                const mathInitCode = `
-import numpy as np
-returns = np.log(np.array(closes_js)[1:] / np.array(closes_js)[:-1])
-returns = returns[~np.isnan(returns)]
+                // 2. Pure Native JavaScript Math Calculations (Zero Dependencies)
+                const logReturns = [];
+                for (let i = 1; i < closes.length; i++) {
+                    logReturns.push(Math.log(closes[i] / closes[i - 1]));
+                }
 
-hist_vol = np.std(returns[-30:]) * np.sqrt(252)
+                // 30-Day Historical Volatility
+                const recentReturns = logReturns.slice(-30);
+                const mean = recentReturns.reduce((a, b) => a + b, 0) / recentReturns.length;
+                const variance = recentReturns.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / (recentReturns.length - 1);
+                const histVol = Math.sqrt(variance) * Math.sqrt(252);
 
-lambda_val = 0.94
-vols = np.zeros(len(returns))
-vols[0] = np.var(returns)
-for i in range(1, len(returns)):
-    vols[i] = lambda_val * vols[i-1] + (1 - lambda_val) * (returns[i-1]**2)
-garch_proxy = np.sqrt(vols[-1]) * np.sqrt(252)
+                // EWMA Volatility Model (Proxy for GARCH Tracking)
+                const lambda = 0.94;
+                let currentVar = logReturns.reduce((a, b) => a + b * b, 0) / logReturns.length; // Baseline seed
+                for (let i = 1; i < logReturns.length; i++) {
+                    currentVar = lambda * currentVar + (1 - lambda) * Math.pow(logReturns[i - 1], 2);
+                }
+                const garchProxy = Math.sqrt(currentVar) * Math.sqrt(252);
 
-import json
-json.dumps({"hist_vol": float(hist_vol), "garch_vol": float(garch_proxy)})
-`;
-                const calculatedVols = JSON.parse(await pyodide.runPythonAsync(mathInitCode));
-                
+                // Populate mathematical calculations to UI immediately
                 document.getElementById('spotPrice').innerText = `$${spot.toFixed(2)}`;
-                document.getElementById('histVolText').innerText = `${(calculatedVols.hist_vol * 100).toFixed(2)}%`;
-                document.getElementById('garchVolText').innerText = `${(calculatedVols.garch_vol * 100).toFixed(2)}%`;
+                document.getElementById('histVolText').innerText = `${(histVol * 100).toFixed(2)}%`;
+                document.getElementById('garchVolText').innerText = `${(garchProxy * 100).toFixed(2)}%`;
                 
                 updateStep('step-calc', 'done', 'Mathematical Statistical Processing Complete.');
                 updateStep('step-options', 'running', 'Sourcing Implied Volatility (IV)...');
 
-                // 2. Derive options snapshot entries
-                let impliedVol = calculatedVols.garch_vol; 
+                // 3. Option Chain lookups
+                let impliedVol = garchProxy; 
                 let expiryLabel = "GARCH Model Proxy (No Options IV)";
 
                 try {
@@ -206,32 +187,21 @@ json.dumps({"hist_vol": float(hist_vol), "garch_vol": float(garch_proxy)})
                     }
                     updateStep('step-options', 'done', 'Options Data Parsed.');
                 } catch (optErr) {
-                    console.warn("Options IV rate limit or absence detected:", optErr);
+                    console.warn("Options IV lookup dropped back to defaults:", optErr);
                     updateStep('step-options', 'warn', 'Options API Limit/Unavailable. Using Model Proxy.');
                 }
 
-                pyodide.globals.set("iv_val", impliedVol);
-                pyodide.globals.set("spot", spot);
-                
-                const finalEvalCode = `
-one_day_move_dlr = spot * (iv_val / np.sqrt(252))
-one_day_move_pct = (iv_val / np.sqrt(252)) * 100
-down_move_target = spot - one_day_move_dlr
+                // 4. Expected Move Calculation Metrics
+                const oneDayMoveDlr = spot * (impliedVol / Math.sqrt(252));
+                const oneDayMovePct = (impliedVol / Math.sqrt(252)) * 100;
+                const downMoveTarget = spot - oneDayMoveDlr;
 
-import json
-json.dumps({
-    "one_day_dlr": float(one_day_move_dlr),
-    "one_day_pct": float(one_day_move_pct),
-    "down_move": float(down_move_target)
-})
-`;
-                const finalOutputs = JSON.parse(await pyodide.runPythonAsync(finalEvalCode));
-
+                // Render out components
                 document.getElementById('ivExpiryText').innerText = expiryLabel;
                 document.getElementById('impliedVolText').innerText = `${(impliedVol * 100).toFixed(2)}%`;
-                document.getElementById('oneDayMove').innerText = `$${finalOutputs.one_day_dlr.toFixed(2)}`;
-                document.getElementById('oneDayMovePct').innerText = `${finalOutputs.one_day_pct.toFixed(2)}%`;
-                document.getElementById('downMoveTarget').innerText = `$${finalOutputs.down_move.toFixed(2)}`;
+                document.getElementById('oneDayMove').innerText = `$${oneDayMoveDlr.toFixed(2)}`;
+                document.getElementById('oneDayMovePct').innerText = `${oneDayMovePct.toFixed(2)}%`;
+                document.getElementById('downMoveTarget').innerText = `$${downMoveTarget.toFixed(2)}`;
 
                 statusContainer.classList.add('hidden');
                 dashboard.classList.remove('hidden');
