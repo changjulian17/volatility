@@ -196,8 +196,8 @@
                     updateStep('step-options', 'warn', 'Options API Limit/Unavailable. Using Model Proxy.');
                 }
 
-                const oneDayMoveDlr = spot * (impliedVol / Math.sqrt(252));
-                const oneDayMovePct = (impliedVol / Math.sqrt(252)) * 100;
+                const oneDayMoveDlr = spot * (impliedVol / Math.sqrt(252)) * .8;
+                const oneDayMovePct = (impliedVol / Math.sqrt(252)) * .8 * 100;
                 const downMoveTarget = spot - oneDayMoveDlr;
 
                 document.getElementById('ivExpiryText').innerText = expiryLabel;
