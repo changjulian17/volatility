@@ -1,0 +1,38 @@
+name: Secure Deploy Pipeline
+
+on:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Auto-Inject Financial Secret Key
+        run: |
+          sed -i "s/__API_KEY_PLACEHOLDER__/${{ secrets.FINANCIAL_API_KEY }}/g" index.html
+
+      - name: Configure GitHub Pages Static Environment
+        uses: actions/configure-pages@v4
+
+      - name: Package Workspace Artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: '.'
+
+      - name: Publish to GitHub Pages Live Hosting
+        id: deployment
+        uses: actions/deploy-pages@v4

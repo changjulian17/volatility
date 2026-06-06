@@ -17,7 +17,7 @@
             <button id="fetchBtn" onclick="runAnalysis()" class="px-6 py-3 bg-yellow-500 hover:bg-yellow-600 text-gray-900 font-bold rounded-lg transition duration-200">GET VOLS</button>
         </div>
 
-        <div id="status" class="text-sm text-gray-400 mb-4 text-center hidden">Initializing Python environment...</div>
+        <div id="status" class="text-sm text-gray-400 mb-4 text-center hidden">Initializing Core Engine...</div>
 
         <div id="outputDashboard" class="space-y-4 hidden">
             <div class="grid grid-cols-2 gap-4 bg-gray-750 p-4 rounded-lg border border-gray-700">
@@ -29,28 +29,9 @@
                     <div class="text-sm text-gray-400 font-medium">GARCH / EWMA Forecast:</div>
                     <div id="garchVol" class="text-xl font-semibold text-white">--</div>
                 </div>
-                <div>
-                    <div class="text-sm text-gray-400 font-medium">Implied Vol:</div>
-                    <div id="impliedVol" class="text-xl font-semibold text-white">--</div>
-                </div>
-                <div>
-                    <div class="text-sm text-gray-400 font-medium">Implied Vol Maturity:</div>
-                    <div id="volMaturity" class="text-xl font-semibold text-white">--</div>
-                </div>
                 <div class="col-span-2 border-t border-gray-700 pt-3 mt-1">
-                    <div class="text-sm text-gray-400 font-medium">Spot Price:</div>
+                    <div class="text-sm text-gray-400 font-medium">Last Close Price:</div>
                     <div id="spotPrice" class="text-2xl font-bold text-yellow-400">--</div>
-                </div>
-            </div>
-
-            <div class="grid grid-cols-2 gap-4 text-sm text-gray-300">
-                <div class="bg-gray-700 p-3 rounded-lg flex justify-between">
-                    <span>IV / Historical:</span>
-                    <span id="ivHistRatio" class="font-mono font-bold text-white">--</span>
-                </div>
-                <div class="bg-gray-700 p-3 rounded-lg flex justify-between">
-                    <span>IV / GARCH:</span>
-                    <span id="ivGarchRatio" class="font-mono font-bold text-white">--</span>
                 </div>
             </div>
 
@@ -81,7 +62,7 @@
             if (pyodideInstance) return pyodideInstance;
             const statusEl = document.getElementById('status');
             statusEl.classList.remove('hidden');
-            statusEl.innerText = "Loading Core Engines...";
+            statusEl.innerText = "Loading Core Analysis Engines...";
             
             pyodideInstance = await loadPyodide();
             await pyodideInstance.loadPackage(['numpy', 'pandas']);
@@ -97,51 +78,34 @@
             const statusEl = document.getElementById('status');
             const dashboard = document.getElementById('outputDashboard');
             
-            statusEl.innerText = `Fetching market metrics for ${ticker}...`;
+            statusEl.innerText = `Fetching historical data for ${ticker}...`;
             statusEl.classList.remove('hidden');
             dashboard.classList.add('hidden');
+
+            // Secure GitHub Variable placeholder text
+            const apiKey = "__API_KEY_PLACEHOLDER__"; 
 
             try {
                 const pyodide = await initPyodide();
 
-                // 1. Fetch market close history and option chains across open market proxies
-                const priceRes = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?range=1y&interval=1d`);
-                const priceData = await priceRes.json();
-                const jsonResult = priceData.chart.result[0];
+                // Fetch directly from Alpha Vantage (Supports Browser CORS)
+                const res = await fetch(`https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=${ticker}&outputsize=compact&apikey=${apiKey}`);
+                const data = await res.json();
                 
-                const closes = jsonResult.indicators.quote[0].close;
-                const spot = jsonResult.meta.regularMarketPrice;
-
-                // 2. Fetch options chain metadata safely
-                const optionsRes = await fetch(`https://query1.finance.yahoo.com/v7/finance/options/${ticker}`);
-                const optionsData = await optionsRes.json();
-                const optionResult = optionsData.optionChain.result[0];
-                
-                let impliedVol = 0.3178; // Fallback default match for XLE setup state
-                let daysToExpiry = 7;
-                let maturityDate = "2026-06-12";
-
-                if(optionResult && optionResult.options && optionResult.options[0]) {
-                    const chain = optionResult.options[0];
-                    const expirationTimestamp = optionResult.expirationDates[0];
-                    if(expirationTimestamp) {
-                        const targetDate = new Date(expirationTimestamp * 1000);
-                        maturityDate = targetDate.toISOString().split('T')[0];
-                        daysToExpiry = Math.max(1, Math.ceil((targetDate - new Date()) / (1000 * 60 * 60 * 24)));
-                    }
-                    // Extract ATM implied vol from option chain mid-points if populated
-                    if(chain.calls && chain.calls.length > 0) {
-                        impliedVol = chain.calls[Math.floor(chain.calls.length / 2)].impliedVolatility || impliedVol;
-                    }
+                if (data["Error Message"] || data["Note"]) {
+                    throw new Error("API limit hit or invalid ticker symbol.");
                 }
 
-                // Push variables securely directly into browser Pyodide runtime environment
-                pyodide.globals.set("closes_js", closes.filter(x => x !== null));
-                pyodide.globals.set("spot", spot);
-                pyodide.globals.set("iv_val", impliedVol);
-                pyodide.globals.set("days_to_expiry", daysToExpiry);
+                const timeSeries = data["Time Series (Daily)"];
+                const dates = Object.keys(timeSeries).sort();
+                
+                // Extract close prices sorted in chronological order
+                const closes = dates.map(date => parseFloat(timeSeries[date]["4. close"]));
+                const spot = closes[closes.length - 1];
 
-                // Inline execution of Python core math module architecture 
+                pyodide.globals.set("closes_js", closes);
+                pyodide.globals.set("spot", spot);
+
                 const pythonCode = `
 import numpy as np
 import pandas as pd
@@ -152,7 +116,7 @@ returns = returns[~np.isnan(returns)]
 # 30-Day Historical Volatility
 hist_vol = np.std(returns[-30:]) * np.sqrt(252)
 
-# High-fidelity browser component alternate proxy engine (EWMA Volatility tracking)
+# EWMA Volatility Model as a browser-side GARCH alternative
 lambda_val = 0.94
 vols = np.zeros(len(returns))
 vols[0] = np.var(returns)
@@ -160,8 +124,8 @@ for i in range(1, len(returns)):
     vols[i] = lambda_val * vols[i-1] + (1 - lambda_val) * (returns[i-1]**2)
 garch_proxy = np.sqrt(vols[-1]) * np.sqrt(252)
 
-# Expected move computations
-one_day_move = spot * (iv_val / np.sqrt(252))
+# Math calculation of expected 1-day range movement using current model vol proxy
+one_day_move = spot * (garch_proxy / np.sqrt(252))
 down_move = spot - one_day_move
 
 results = {
@@ -175,15 +139,10 @@ json.dumps(results)
 `;
                 const pyOutputs = JSON.parse(await pyodide.runPythonAsync(pythonCode));
 
-                // Populate elements dynamically
+                // Populate UI Elements
                 document.getElementById('spotPrice').innerText = `$${spot.toFixed(2)}`;
                 document.getElementById('histVol').innerText = `${(pyOutputs.hist_vol * 100).toFixed(2)}%`;
                 document.getElementById('garchVol').innerText = `${(pyOutputs.garch_vol * 100).toFixed(2)}%`;
-                document.getElementById('impliedVol').innerText = `${(impliedVol * 100).toFixed(2)}%`;
-                document.getElementById('volMaturity').innerText = `${maturityDate} (${daysToExpiry} days)`;
-                
-                document.getElementById('ivHistRatio').innerText = (impliedVol / pyOutputs.hist_vol).toFixed(4);
-                document.getElementById('ivGarchRatio').innerText = (impliedVol / pyOutputs.garch_vol).toFixed(4);
                 
                 document.getElementById('oneDayMove').innerText = `± $${pyOutputs.one_day.toFixed(2)}`;
                 document.getElementById('downMoveTarget').innerText = `$${pyOutputs.down_move.toFixed(2)}`;
@@ -193,7 +152,7 @@ json.dumps(results)
 
             } catch (err) {
                 console.error(err);
-                statusEl.innerText = "Error pulling live metrics. Please verify ticker or CORS limitations.";
+                statusEl.innerText = "Error pulling data. Verify your Alpha Vantage API key limits or ticker configuration.";
             }
         }
 
@@ -204,12 +163,11 @@ json.dumps(results)
                 content.classList.remove('hidden');
                 arrow.style.transform = 'rotate(0deg)';
             } else {
-                content.add('hidden');
+                content.classList.add('hidden');
                 arrow.style.transform = 'rotate(180deg)';
             }
         }
 
-        // Initialize display configuration state as hidden by default
         document.addEventListener("DOMContentLoaded", () => {
             document.getElementById('expectedMoveContent').classList.add('hidden');
             document.getElementById('toggleArrow').style.transform = 'rotate(180deg)';
