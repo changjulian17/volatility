@@ -1,6 +1,6 @@
-# Secure Volatility & Expected Move Analyzer
+# Secure Volatility & Options Analytical Dashboard
 
-A single-page analytical dashboard executing browser-side WebAssembly data pipelines via Pyodide. Handled by a secure GitHub Actions deployment pipeline to shield sensitive API keys.
+A static portfolio helper processing high-fidelity tracking options variables over WebAssembly compilation layers safely hosted via GitHub actions pipelines.
 
-## ⚙️ Automated Deployment
-This repo utilizes a `.github/workflows/deploy.yml` pipeline configuration. The action automatically injects the repository secret variable `FINANCIAL_API_KEY` directly into `index.html` at compile time and updates GitHub Pages securely.
+## 🛠️ Requirements & Manual Checklist
+Follow the deployment execution guide included in prompt interactions to establish repository secret tokens and toggle GitHub Pages to launch automatically from Actions compilation pipelines.

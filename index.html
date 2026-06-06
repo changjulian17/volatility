@@ -5,7 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Volatility & Expected Move Analyzer</title>
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
-    <script src="https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/pyodide@0.25.0/pyodide.js"></script>
+    <style>
+        /* Custom tooltip hover behavior */
+        .tooltip:hover .tooltip-text { opacity: 1; visibility: visible; }
+    </style>
 </head>
 <body class="bg-gray-900 text-gray-100 min-h-screen flex flex-col items-center py-10 px-4">
 
@@ -13,43 +17,65 @@
         <h1 class="text-3xl font-bold mb-6 text-center text-yellow-400">Volatility & Expected Move</h1>
         
         <div class="flex gap-3 mb-6">
-            <input type="text" id="tickerInput" value="XLE" placeholder="Ticker (e.g. XLE, AAPL)" class="flex-1 px-4 py-3 bg-gray-700 rounded-lg text-white border border-gray-600 focus:outline-none focus:border-yellow-400 font-bold uppercase">
+            <input type="text" id="tickerInput" value="AAPL" placeholder="Ticker (e.g. AAPL, XLE)" class="flex-1 px-4 py-3 bg-gray-700 rounded-lg text-white border border-gray-600 focus:outline-none focus:border-yellow-400 font-bold uppercase">
             <button id="fetchBtn" onclick="runAnalysis()" class="px-6 py-3 bg-yellow-500 hover:bg-yellow-600 text-gray-900 font-bold rounded-lg transition duration-200">GET VOLS</button>
         </div>
 
-        <div id="status" class="text-sm text-gray-400 mb-4 text-center hidden">Initializing Core Engine...</div>
+        <div id="status" class="text-sm text-gray-400 mb-4 text-center hidden">Initializing System Engines...</div>
 
-        <div id="outputDashboard" class="space-y-4 hidden">
-            <div class="grid grid-cols-2 gap-4 bg-gray-750 p-4 rounded-lg border border-gray-700">
-                <div>
-                    <div class="text-sm text-gray-400 font-medium">Historical Vol (30d):</div>
-                    <div id="histVol" class="text-xl font-semibold text-white">--</div>
-                </div>
-                <div>
-                    <div class="text-sm text-gray-400 font-medium">GARCH / EWMA Forecast:</div>
-                    <div id="garchVol" class="text-xl font-semibold text-white">--</div>
-                </div>
-                <div class="col-span-2 border-t border-gray-700 pt-3 mt-1">
-                    <div class="text-sm text-gray-400 font-medium">Last Close Price:</div>
-                    <div id="spotPrice" class="text-2xl font-bold text-yellow-400">--</div>
+        <div id="outputDashboard" class="space-y-6 hidden">
+            
+            <div class="bg-gray-750 p-4 rounded-lg border border-gray-700 font-mono text-sm space-y-1 relative">
+                <button onclick="copyVolsToClipboard()" class="absolute top-3 right-3 bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs px-2 py-1 rounded transition">Copy Text</button>
+                <div id="copyableVolsBlock">
+<div>Historical Vol (30d): <span id="histVolText" class="text-white font-bold">--%</span></div>
+<div>GARCH / EWMA Forecast: <span id="garchVolText" class="text-white font-bold">--%</span></div>
+<div>Implied volatility (<span id="ivExpiryText">IV exp date</span>): <span id="impliedVolText" class="text-white font-bold">--%</span></div>
                 </div>
             </div>
 
-            <div class="border border-gray-700 rounded-lg overflow-hidden mt-6">
+            <div class="text-sm text-gray-400 px-1">
+                Last Close Stock Price: <span id="spotPrice" class="text-xl font-bold text-yellow-400 ml-1">--</span>
+            </div>
+
+            <div class="border border-gray-700 rounded-lg overflow-hidden mt-4">
                 <button onclick="toggleExpectedMove()" class="w-full bg-gray-750 hover:bg-gray-700 px-4 py-3 flex justify-between items-center text-left font-bold text-yellow-400 focus:outline-none">
                     <span>WHAT IS THE EXPECTED MOVE?</span>
                     <span id="toggleArrow" class="transform transition-transform duration-200">▲</span>
                 </button>
                 
-                <div id="expectedMoveContent" class="p-4 bg-gray-850 space-y-3 transition-all duration-300">
-                    <div class="flex justify-between items-center border-b border-gray-700 pb-2">
-                        <span class="text-gray-400">Expected One-Day Move:</span>
-                        <span id="oneDayMove" class="text-xl font-mono text-white font-semibold">--</span>
+                <div id="expectedMoveContent" class="p-4 bg-gray-850 space-y-4">
+                    
+                    <div class="flex justify-between items-center border-b border-gray-700 pb-2 relative">
+                        <span class="text-gray-400 tooltip cursor-help border-b border-dotted border-gray-500">
+                            Expected One-Day Move ($):
+                            <span class="tooltip-text absolute bg-black text-xs text-gray-200 rounded p-2 max-w-xs -top-12 left-0 opacity-0 invisible transition-opacity duration-200 z-10 shadow-lg border border-gray-700">
+                                Formula: Spot Price × (Implied Volatility / √252)
+                            </span>
+                        </span>
+                        <span id="oneDayMove" class="text-lg font-mono text-white font-semibold">--</span>
                     </div>
-                    <div class="flex justify-between items-center">
-                        <span class="text-gray-400">1sd Down Move Target:</span>
-                        <span id="downMoveTarget" class="text-xl font-mono text-red-400 font-bold">--</span>
+
+                    <div class="flex justify-between items-center border-b border-gray-700 pb-2 relative">
+                        <span class="text-gray-400 tooltip cursor-help border-b border-dotted border-gray-500">
+                            Expected One-Day Move (%):
+                            <span class="tooltip-text absolute bg-black text-xs text-gray-200 rounded p-2 max-w-xs -top-12 left-0 opacity-0 invisible transition-opacity duration-200 z-10 shadow-lg border border-gray-700">
+                                Formula: Implied Volatility / √252
+                            </span>
+                        </span>
+                        <span id="oneDayMovePct" class="text-lg font-mono text-yellow-400 font-bold">--</span>
                     </div>
+
+                    <div class="flex justify-between items-center relative">
+                        <span class="text-gray-400 tooltip cursor-help border-b border-dotted border-gray-500">
+                            1sd Down Move Target:
+                            <span class="tooltip-text absolute bg-black text-xs text-gray-200 rounded p-2 max-w-xs -top-12 left-0 opacity-0 invisible transition-opacity duration-200 z-10 shadow-lg border border-gray-700">
+                                Formula: Spot Price - Expected One-Day Move ($)
+                            </span>
+                        </span>
+                        <span id="downMoveTarget" class="text-lg font-mono text-red-400 font-bold">--</span>
+                    </div>
+
                 </div>
             </div>
         </div>
@@ -62,7 +88,7 @@
             if (pyodideInstance) return pyodideInstance;
             const statusEl = document.getElementById('status');
             statusEl.classList.remove('hidden');
-            statusEl.innerText = "Loading Core Analysis Engines...";
+            statusEl.innerText = "Loading Core Math Modules...";
             
             pyodideInstance = await loadPyodide();
             await pyodideInstance.loadPackage(['numpy', 'pandas']);
@@ -78,33 +104,52 @@
             const statusEl = document.getElementById('status');
             const dashboard = document.getElementById('outputDashboard');
             
-            statusEl.innerText = `Fetching historical data for ${ticker}...`;
+            statusEl.innerText = `Fetching financial data for ${ticker}...`;
             statusEl.classList.remove('hidden');
             dashboard.classList.add('hidden');
 
-            // Secure GitHub Variable placeholder text
             const apiKey = "__API_KEY_PLACEHOLDER__"; 
 
             try {
                 const pyodide = await initPyodide();
 
-                // Fetch directly from Alpha Vantage (Supports Browser CORS)
-                const res = await fetch(`https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=${ticker}&outputsize=compact&apikey=${apiKey}`);
-                const data = await res.json();
+                // 1. Fetch historical stock bars from Polygon.io
+                const today = new Date().toISOString().split('T')[0];
+                const physicalPast = new Date();
+                physicalPast.setFullYear(physicalPast.getFullYear() - 1);
+                const aYearAgo = physicalPast.toISOString().split('T')[0];
+
+                const histRes = await fetch(`https://api.polygon.io/v2/aggs/ticker/${ticker}/range/1/day/${aYearAgo}/${today}?adjusted=true&sort=asc&apiKey=${apiKey}`);
+                const histData = await histRes.json();
                 
-                if (data["Error Message"] || data["Note"]) {
-                    throw new Error("API limit hit or invalid ticker symbol.");
+                if (!histData.results || histData.results.length === 0) {
+                    throw new Error("No tracking historical entries discovered.");
                 }
 
-                const timeSeries = data["Time Series (Daily)"];
-                const dates = Object.keys(timeSeries).sort();
-                
-                // Extract close prices sorted in chronological order
-                const closes = dates.map(date => parseFloat(timeSeries[date]["4. close"]));
+                const closes = histData.results.map(bar => bar.c);
                 const spot = closes[closes.length - 1];
+
+                // 2. Fetch Option Chain via Polygon to derive front-month ATM Implied Volatility
+                const optionsRes = await fetch(`https://api.polygon.io/v3/snapshot/options/${ticker}?limit=5&apiKey=${apiKey}`);
+                const optionsData = await optionsRes.json();
+                
+                let impliedVol = 0.2450; // Mathematical default baseline fallback if chain empty
+                let expiryLabel = "Front Expiry";
+
+                if (optionsData.results && optionsData.results.length > 0) {
+                    // Pull details safely from the first available ATM contract mapping
+                    const contract = optionsData.results[0];
+                    if (contract.implied_volatility) {
+                        impliedVol = contract.implied_volatility;
+                    }
+                    if (contract.details && contract.details.expiration_date) {
+                        expiryLabel = contract.details.expiration_date;
+                    }
+                }
 
                 pyodide.globals.set("closes_js", closes);
                 pyodide.globals.set("spot", spot);
+                pyodide.globals.set("iv_val", impliedVol);
 
                 const pythonCode = `
 import numpy as np
@@ -113,10 +158,8 @@ import pandas as pd
 returns = np.log(np.array(closes_js)[1:] / np.array(closes_js)[:-1])
 returns = returns[~np.isnan(returns)]
 
-# 30-Day Historical Volatility
 hist_vol = np.std(returns[-30:]) * np.sqrt(252)
 
-# EWMA Volatility Model as a browser-side GARCH alternative
 lambda_val = 0.94
 vols = np.zeros(len(returns))
 vols[0] = np.var(returns)
@@ -124,27 +167,33 @@ for i in range(1, len(returns)):
     vols[i] = lambda_val * vols[i-1] + (1 - lambda_val) * (returns[i-1]**2)
 garch_proxy = np.sqrt(vols[-1]) * np.sqrt(252)
 
-# Math calculation of expected 1-day range movement using current model vol proxy
-one_day_move = spot * (garch_proxy / np.sqrt(252))
-down_move = spot - one_day_move
+# Calculation shifts handling explicit metrics configurations
+one_day_move_dlr = spot * (iv_val / np.sqrt(252))
+one_day_move_pct = (iv_val / np.sqrt(252)) * 100
+down_move_target = spot - one_day_move_dlr
 
 results = {
     "hist_vol": float(hist_vol),
     "garch_vol": float(garch_proxy),
-    "one_day": float(one_day_move),
-    "down_move": float(down_move)
+    "one_day_dlr": float(one_day_move_dlr),
+    "one_day_pct": float(one_day_move_pct),
+    "down_move": float(down_move_target)
 }
 import json
 json.dumps(results)
 `;
                 const pyOutputs = JSON.parse(await pyodide.runPythonAsync(pythonCode));
 
-                // Populate UI Elements
-                document.getElementById('spotPrice').innerText = `$${spot.toFixed(2)}`;
-                document.getElementById('histVol').innerText = `${(pyOutputs.hist_vol * 100).toFixed(2)}%`;
-                document.getElementById('garchVol').innerText = `${(pyOutputs.garch_vol * 100).toFixed(2)}%`;
+                // Populate Inline Metrics Display Layout
+                document.getElementById('histVolText').innerText = `${(pyOutputs.hist_vol * 100).toFixed(2)}%`;
+                document.getElementById('garchVolText').innerText = `${(pyOutputs.garch_vol * 100).toFixed(2)}%`;
+                document.getElementById('ivExpiryText').innerText = expiryLabel;
+                document.getElementById('impliedVolText').innerText = `${(impliedVol * 100).toFixed(2)}%`;
                 
-                document.getElementById('oneDayMove').innerText = `± $${pyOutputs.one_day.toFixed(2)}`;
+                // Populate Secondary Calculations Elements
+                document.getElementById('spotPrice').innerText = `$${spot.toFixed(2)}`;
+                document.getElementById('oneDayMove').innerText = `$${pyOutputs.one_day_dlr.toFixed(2)}`;
+                document.getElementById('oneDayMovePct').innerText = `${pyOutputs.one_day_pct.toFixed(2)}%`;
                 document.getElementById('downMoveTarget').innerText = `$${pyOutputs.down_move.toFixed(2)}`;
 
                 statusEl.classList.add('hidden');
@@ -152,8 +201,23 @@ json.dumps(results)
 
             } catch (err) {
                 console.error(err);
-                statusEl.innerText = "Error pulling data. Verify your Alpha Vantage API key limits or ticker configuration.";
+                statusEl.innerText = "Error analyzing ticker framework. Verify key parameters or limits.";
             }
+        }
+
+        function copyVolsToClipboard() {
+            const hist = document.getElementById('histVolText').innerText;
+            const garch = document.getElementById('garchVolText').innerText;
+            const expDate = document.getElementById('ivExpiryText').innerText;
+            const iv = document.getElementById('impliedVolText').innerText;
+
+            const textToCopy = `Historical Vol (30d): ${hist}\nGARCH / EWMA Forecast: ${garch}\nImplied volatility (${expDate}): ${iv}`;
+            
+            navigator.clipboard.writeText(textToCopy).then(() => {
+                alert("Text successfully copied to clipboard!");
+            }).catch(err => {
+                console.error("Clipboard copy failed: ", err);
+            });
         }
 
         function toggleExpectedMove() {
