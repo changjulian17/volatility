@@ -28,12 +28,22 @@
 
         <div id="outputDashboard" class="space-y-6 hidden">
             
-            <div class="bg-gray-750 p-4 rounded-lg border border-gray-700 font-mono text-sm space-y-1 relative">
-                <button onclick="copyVolsToClipboard()" class="absolute top-3 right-3 bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs px-2 py-1 rounded transition">Copy Text</button>
-                <div id="copyableVolsBlock">
-                    <div>Historical Vol (30d): <span id="histVolText" class="text-white font-bold">--%</span></div>
-                    <div>GARCH / EWMA Forecast: <span id="garchVolText" class="text-white font-bold">--%</span></div>
-                    <div>Implied volatility (<span id="ivExpiryText">IV exp date</span>): <span id="impliedVolText" class="text-white font-bold">--%</span></div>
+            <div class="bg-gray-750 p-5 rounded-lg border border-gray-700 relative">
+                <button id="copyBtn" onclick="copyVolsToClipboard()" class="absolute top-3 right-3 bg-gray-750 hover:bg-gray-750/80 text-gray-400 hover:text-yellow-400 text-xs px-2.5 py-1 rounded border border-gray-600 transition">Copy Text</button>
+                
+                <div class="space-y-2.5 max-w-md pr-16">
+                    <div class="flex justify-between items-center border-b border-gray-750 pb-1.5">
+                        <span class="text-gray-400 text-sm font-medium">Historical Vol (30d):</span>
+                        <span id="histVolText" class="text-white font-bold tracking-wide">--%</span>
+                    </div>
+                    <div class="flex justify-between items-center border-b border-gray-750 pb-1.5">
+                        <span class="text-gray-400 text-sm font-medium">GARCH / EWMA Forecast:</span>
+                        <span id="garchVolText" class="text-white font-bold tracking-wide">--%</span>
+                    </div>
+                    <div class="flex justify-between items-center">
+                        <span class="text-gray-400 text-sm font-medium">Implied volatility (<span id="ivExpiryText" class="text-gray-500">IV exp date</span>):</span>
+                        <span id="impliedVolText" class="text-white font-bold tracking-wide">--%</span>
+                    </div>
                 </div>
             </div>
 
@@ -119,7 +129,6 @@
             const apiKey = "__API_KEY_PLACEHOLDER__"; 
 
             try {
-                // 1. Fetch historical metrics
                 const today = new Date().toISOString().split('T')[0];
                 const physicalPast = new Date();
                 physicalPast.setFullYear(physicalPast.getFullYear() - 1);
@@ -130,7 +139,7 @@
                 const histData = await histRes.json();
                 
                 if (!histData.results || histData.results.length === 0) {
-                    throw new Error("No historical data returned for ticker.");
+                    throw new Error("No historical data returned.");
                 }
 
                 updateStep('step-hist', 'done', 'Historical Stock Data Loaded.');
@@ -139,27 +148,23 @@
                 const closes = histData.results.map(bar => bar.c);
                 const spot = closes[closes.length - 1];
 
-                // 2. Pure Native JavaScript Math Calculations (Zero Dependencies)
                 const logReturns = [];
                 for (let i = 1; i < closes.length; i++) {
                     logReturns.push(Math.log(closes[i] / closes[i - 1]));
                 }
 
-                // 30-Day Historical Volatility
                 const recentReturns = logReturns.slice(-30);
                 const mean = recentReturns.reduce((a, b) => a + b, 0) / recentReturns.length;
                 const variance = recentReturns.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / (recentReturns.length - 1);
                 const histVol = Math.sqrt(variance) * Math.sqrt(252);
 
-                // EWMA Volatility Model (Proxy for GARCH Tracking)
                 const lambda = 0.94;
-                let currentVar = logReturns.reduce((a, b) => a + b * b, 0) / logReturns.length; // Baseline seed
+                let currentVar = logReturns.reduce((a, b) => a + b * b, 0) / logReturns.length;
                 for (let i = 1; i < logReturns.length; i++) {
                     currentVar = lambda * currentVar + (1 - lambda) * Math.pow(logReturns[i - 1], 2);
                 }
                 const garchProxy = Math.sqrt(currentVar) * Math.sqrt(252);
 
-                // Populate mathematical calculations to UI immediately
                 document.getElementById('spotPrice').innerText = `$${spot.toFixed(2)}`;
                 document.getElementById('histVolText').innerText = `${(histVol * 100).toFixed(2)}%`;
                 document.getElementById('garchVolText').innerText = `${(garchProxy * 100).toFixed(2)}%`;
@@ -167,11 +172,11 @@
                 updateStep('step-calc', 'done', 'Mathematical Statistical Processing Complete.');
                 updateStep('step-options', 'running', 'Sourcing Implied Volatility (IV)...');
 
-                // 3. Option Chain lookups
                 let impliedVol = garchProxy; 
                 let expiryLabel = "GARCH Model Proxy (No Options IV)";
 
                 try {
+                    // Pulling the most recent options contract snapshot mapping via Polygon
                     const optionsRes = await fetch(`https://api.polygon.io/v3/snapshot/options/${ticker}?limit=5&apiKey=${apiKey}`);
                     if (optionsRes.ok) {
                         const optionsData = await optionsRes.json();
@@ -187,16 +192,14 @@
                     }
                     updateStep('step-options', 'done', 'Options Data Parsed.');
                 } catch (optErr) {
-                    console.warn("Options IV lookup dropped back to defaults:", optErr);
+                    console.warn("Options IV fallback triggered:", optErr);
                     updateStep('step-options', 'warn', 'Options API Limit/Unavailable. Using Model Proxy.');
                 }
 
-                // 4. Expected Move Calculation Metrics
                 const oneDayMoveDlr = spot * (impliedVol / Math.sqrt(252));
                 const oneDayMovePct = (impliedVol / Math.sqrt(252)) * 100;
                 const downMoveTarget = spot - oneDayMoveDlr;
 
-                // Render out components
                 document.getElementById('ivExpiryText').innerText = expiryLabel;
                 document.getElementById('impliedVolText').innerText = `${(impliedVol * 100).toFixed(2)}%`;
                 document.getElementById('oneDayMove').innerText = `$${oneDayMoveDlr.toFixed(2)}`;
@@ -222,8 +225,14 @@
             const textToCopy = `Historical Vol (30d): ${hist}\nGARCH / EWMA Forecast: ${garch}\nImplied volatility (${expDate}): ${iv}`;
             
             navigator.clipboard.writeText(textToCopy).then(() => {
-                alert("Metrics string saved to clipboard.");
-            }).catch(err => console.error("Copy failed", err));
+                const btn = document.getElementById('copyBtn');
+                btn.innerText = "Copied!";
+                btn.className = "absolute top-3 right-3 bg-green-900/40 text-green-400 text-xs px-2.5 py-1 rounded border border-green-700 transition";
+                setTimeout(() => {
+                    btn.innerText = "Copy Text";
+                    btn.className = "absolute top-3 right-3 bg-gray-750 hover:bg-gray-750/80 text-gray-400 hover:text-yellow-400 text-xs px-2.5 py-1 rounded border border-gray-600 transition";
+                }, 1800);
+            }).catch(err => console.error("Clipboard drop blocker error:", err));
         }
 
         function toggleExpectedMove() {
