@@ -20,7 +20,12 @@
             <button id="fetchBtn" onclick="runAnalysis()" class="px-6 py-3 bg-yellow-500 hover:bg-yellow-600 text-gray-900 font-bold rounded-lg transition duration-200">GET VOLS</button>
         </div>
 
-        <div id="status" class="text-sm text-gray-400 mb-4 text-center hidden">Initializing System Engines...</div>
+        <div id="statusContainer" class="hidden bg-gray-850 p-4 rounded-lg border border-gray-700 mb-6 space-y-2 text-sm text-gray-300">
+            <div id="step-wasm" class="flex items-center gap-2 text-gray-500">⚪ Booting WebAssembly Python Engine...</div>
+            <div id="step-hist" class="flex items-center gap-2 text-gray-500">⚪ Pulling Historical Stock Data...</div>
+            <div id="step-calc" class="flex items-center gap-2 text-gray-500">⚪ Calculating Math Engine Models...</div>
+            <div id="step-options" class="flex items-center gap-2 text-gray-500">⚪ Sourcing Implied Volatility (IV)...</div>
+        </div>
 
         <div id="outputDashboard" class="space-y-6 hidden">
             
@@ -83,16 +88,30 @@
     <script>
         let pyodideInstance = null;
 
+        function updateStep(id, status, text) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            if (status === 'running') {
+                el.className = "flex items-center gap-2 text-yellow-400 font-medium";
+                el.innerHTML = `⏳ ${text}`;
+            } else if (status === 'done') {
+                el.className = "flex items-center gap-2 text-green-400";
+                el.innerHTML = `✅ ${text}`;
+            } else if (status === 'warn') {
+                el.className = "flex items-center gap-2 text-amber-400";
+                el.innerHTML = `⚠️ ${text}`;
+            }
+        }
+
         async function initPyodide() {
             if (pyodideInstance) return pyodideInstance;
-            const statusEl = document.getElementById('status');
-            statusEl.classList.remove('hidden');
-            statusEl.innerText = "Loading Core Math Modules...";
+            updateStep('step-wasm', 'running', 'Booting WebAssembly Python Engine...');
             
+            // Explicitly await the library initialization and loading sequence
             pyodideInstance = await loadPyodide();
             await pyodideInstance.loadPackage(['numpy', 'pandas']);
             
-            statusEl.classList.add('hidden');
+            updateStep('step-wasm', 'done', 'WebAssembly Python Engine Ready.');
             return pyodideInstance;
         }
 
@@ -100,19 +119,25 @@
             const ticker = document.getElementById('tickerInput').value.trim().toUpperCase();
             if (!ticker) return;
 
-            const statusEl = document.getElementById('status');
+            const statusContainer = document.getElementById('statusContainer');
             const dashboard = document.getElementById('outputDashboard');
             
-            statusEl.innerText = `Fetching data for ${ticker}...`;
-            statusEl.classList.remove('hidden');
+            statusContainer.classList.remove('hidden');
             dashboard.classList.add('hidden');
+            
+            updateStep('step-wasm', pyodideInstance ? 'done' : 'running', pyodideInstance ? 'WebAssembly Python Engine Ready.' : 'Booting WebAssembly Python Engine...');
+            updateStep('step-hist', 'running', 'Pulling Historical Stock Data...');
+            document.getElementById('step-calc').className = "flex items-center gap-2 text-gray-500";
+            document.getElementById('step-calc').innerText = "⚪ Calculating Math Engine Models...";
+            document.getElementById('step-options').className = "flex items-center gap-2 text-gray-500";
+            document.getElementById('step-options').innerText = "⚪ Sourcing Implied Volatility (IV)...";
 
             const apiKey = "__API_KEY_PLACEHOLDER__"; 
 
             try {
                 const pyodide = await initPyodide();
 
-                // 1. Fetch historical data
+                // 1. Sourcing Aggregates
                 const today = new Date().toISOString().split('T')[0];
                 const physicalPast = new Date();
                 physicalPast.setFullYear(physicalPast.getFullYear() - 1);
@@ -123,38 +148,20 @@
                 const histData = await histRes.json();
                 
                 if (!histData.results || histData.results.length === 0) {
-                    throw new Error("No historical data returned for ticker.");
+                    throw new Error("No historical parameters tracked for ticker.");
                 }
+
+                updateStep('step-hist', 'done', 'Historical Stock Data Loaded.');
+                updateStep('step-calc', 'running', 'Calculating Math Engine Models...');
 
                 const closes = histData.results.map(bar => bar.c);
                 const spot = closes[closes.length - 1];
 
-                // 2. Safe Options chain fetch with graceful fallback
-                let impliedVol = 0.25; 
-                let expiryLabel = "Front Expiry";
-
-                try {
-                    const optionsRes = await fetch(`https://api.polygon.io/v3/snapshot/options/${ticker}?limit=5&apiKey=${apiKey}`);
-                    if (optionsRes.ok) {
-                        const optionsData = await optionsRes.json();
-                        if (optionsData.results && optionsData.results.length > 0) {
-                            const contract = optionsData.results[0];
-                            if (contract.implied_volatility) impliedVol = contract.implied_volatility;
-                            if (contract.details && contract.details.expiration_date) expiryLabel = contract.details.expiration_date;
-                        }
-                    }
-                } catch (optErr) {
-                    console.warn("Options IV lookup failed, falling back to historical engine defaults:", optErr);
-                }
-
                 pyodide.globals.set("closes_js", closes);
-                pyodide.globals.set("spot", spot);
-                pyodide.globals.set("iv_val", impliedVol);
-
-                const pythonCode = `
+                
+                // Explicit processing sequence
+                const mathInitCode = `
 import numpy as np
-import pandas as pd
-
 returns = np.log(np.array(closes_js)[1:] / np.array(closes_js)[:-1])
 returns = returns[~np.isnan(returns)]
 
@@ -167,39 +174,72 @@ for i in range(1, len(returns)):
     vols[i] = lambda_val * vols[i-1] + (1 - lambda_val) * (returns[i-1]**2)
 garch_proxy = np.sqrt(vols[-1]) * np.sqrt(252)
 
+import json
+json.dumps({"hist_vol": float(hist_vol), "garch_vol": float(garch_proxy)})
+`;
+                const calculatedVols = JSON.parse(await pyodide.runPythonAsync(mathInitCode));
+                
+                document.getElementById('spotPrice').innerText = `$${spot.toFixed(2)}`;
+                document.getElementById('histVolText').innerText = `${(calculatedVols.hist_vol * 100).toFixed(2)}%`;
+                document.getElementById('garchVolText').innerText = `${(calculatedVols.garch_vol * 100).toFixed(2)}%`;
+                
+                updateStep('step-calc', 'done', 'Mathematical Statistical Processing Complete.');
+                updateStep('step-options', 'running', 'Sourcing Implied Volatility (IV)...');
+
+                // 2. Derive options snapshot entries
+                let impliedVol = calculatedVols.garch_vol; 
+                let expiryLabel = "GARCH Model Proxy (No Options IV)";
+
+                try {
+                    const optionsRes = await fetch(`https://api.polygon.io/v3/snapshot/options/${ticker}?limit=5&apiKey=${apiKey}`);
+                    if (optionsRes.ok) {
+                        const optionsData = await optionsRes.json();
+                        if (optionsData.results && optionsData.results.length > 0) {
+                            const contract = optionsData.results[0];
+                            if (contract.implied_volatility) {
+                                impliedVol = contract.implied_volatility;
+                                if (contract.details && contract.details.expiration_date) {
+                                    expiryLabel = contract.details.expiration_date;
+                                }
+                            }
+                        }
+                    }
+                    updateStep('step-options', 'done', 'Options Data Parsed.');
+                } catch (optErr) {
+                    console.warn("Options IV rate limit or absence detected:", optErr);
+                    updateStep('step-options', 'warn', 'Options API Limit/Unavailable. Using Model Proxy.');
+                }
+
+                pyodide.globals.set("iv_val", impliedVol);
+                pyodide.globals.set("spot", spot);
+                
+                const finalEvalCode = `
 one_day_move_dlr = spot * (iv_val / np.sqrt(252))
 one_day_move_pct = (iv_val / np.sqrt(252)) * 100
 down_move_target = spot - one_day_move_dlr
 
-results = {
-    "hist_vol": float(hist_vol),
-    "garch_vol": float(garch_proxy),
+import json
+json.dumps({
     "one_day_dlr": float(one_day_move_dlr),
     "one_day_pct": float(one_day_move_pct),
     "down_move": float(down_move_target)
-}
-import json
-json.dumps(results)
+})
 `;
-                const pyOutputs = JSON.parse(await pyodide.runPythonAsync(pythonCode));
+                const finalOutputs = JSON.parse(await pyodide.runPythonAsync(finalEvalCode));
 
-                // Populate fields
-                document.getElementById('histVolText').innerText = `${(pyOutputs.hist_vol * 100).toFixed(2)}%`;
-                document.getElementById('garchVolText').innerText = `${(pyOutputs.garch_vol * 100).toFixed(2)}%`;
                 document.getElementById('ivExpiryText').innerText = expiryLabel;
                 document.getElementById('impliedVolText').innerText = `${(impliedVol * 100).toFixed(2)}%`;
-                
-                document.getElementById('spotPrice').innerText = `$${spot.toFixed(2)}`;
-                document.getElementById('oneDayMove').innerText = `$${pyOutputs.one_day_dlr.toFixed(2)}`;
-                document.getElementById('oneDayMovePct').innerText = `${pyOutputs.one_day_pct.toFixed(2)}%`;
-                document.getElementById('downMoveTarget').innerText = `$${pyOutputs.down_move.toFixed(2)}`;
+                document.getElementById('oneDayMove').innerText = `$${finalOutputs.one_day_dlr.toFixed(2)}`;
+                document.getElementById('oneDayMovePct').innerText = `${finalOutputs.one_day_pct.toFixed(2)}%`;
+                document.getElementById('downMoveTarget').innerText = `$${finalOutputs.down_move.toFixed(2)}`;
 
-                statusEl.classList.add('hidden');
+                statusContainer.classList.add('hidden');
                 dashboard.classList.remove('hidden');
 
             } catch (err) {
                 console.error(err);
-                statusEl.innerText = `Error: ${err.message}. Check your API Key setup.`;
+                alert(`Analysis failed: ${err.message}`);
+                statusContainer.classList.add('hidden');
             }
         }
 
@@ -212,10 +252,8 @@ json.dumps(results)
             const textToCopy = `Historical Vol (30d): ${hist}\nGARCH / EWMA Forecast: ${garch}\nImplied volatility (${expDate}): ${iv}`;
             
             navigator.clipboard.writeText(textToCopy).then(() => {
-                alert("Text copied!");
-            }).catch(err => {
-                console.error("Copy failed", err);
-            });
+                alert("Metrics string saved to clipboard.");
+            }).catch(err => console.error("Copy failed", err));
         }
 
         function toggleExpectedMove() {
